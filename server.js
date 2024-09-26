@@ -27,12 +27,12 @@ mongoose
 // Routes
 const authRoutes = require("./routes/auth");
 const teamRoutes = require("./routes/team");
-const mapbanRoutes = require("./routes/mapban");
+const roomRoutes = require("./routes/room");
 
 // Use routes
 app.use("/auth", authRoutes);
 app.use("/team", teamRoutes);
-app.use("/mapban", mapbanRoutes);
+app.use("/room", roomRoutes);
 
 app.get("/", (req, res) => {
 	res.send("API is running");
