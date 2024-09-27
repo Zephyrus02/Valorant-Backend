@@ -32,6 +32,11 @@ const RoomSchema = new mongoose.Schema({
         type: String,
         enum: ['attacker', 'defender'], // Choice can be either 'attacker' or 'defender'
         default: null
+    },
+    winner: {
+        type: mongoose.Schema.Types.ObjectId, // To reference the winning team
+        ref: 'Team',
+        default: null
     }
 });
 

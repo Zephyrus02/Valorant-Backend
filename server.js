@@ -28,11 +28,13 @@ mongoose
 const authRoutes = require("./routes/auth");
 const teamRoutes = require("./routes/team");
 const roomRoutes = require("./routes/room");
+const bracketRoutes = require("./routes/bracket");
 
 // Use routes
 app.use("/auth", authRoutes);
 app.use("/team", teamRoutes);
 app.use("/room", roomRoutes);
+app.use("/bracket", bracketRoutes);
 
 app.get("/", (req, res) => {
 	res.send("API is running");
