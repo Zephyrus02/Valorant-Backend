@@ -4,43 +4,82 @@ const authMiddleware = require('../middleware/authMiddleware');
 
 const router = express.Router();
 
-// Helper function to generate custom match IDs
-const generateMatchId = (bracketId, matchCount) => {
-    return `${bracketId}-M${String(matchCount).padStart(3, '0')}`; // Example: "B001-M001"
+// Helper function to generate match ID based on round and matchup index
+const generateMatchId = (roundNumber, matchCount) => {
+    return `R${roundNumber}-M${String(matchCount).padStart(3, '0')}`; // Example: R1-M001
 };
 
-// Helper function to generate bracket IDs
-const generateBracketId = (bracketCount) => {
-    return `B${String(bracketCount).padStart(3, '0')}`;
+// Function to check if all matchups in a round are completed
+const isRoundComplete = (round) => {
+    return round.matchups.every(matchup => matchup.winner !== null);
 };
 
-// Admin creates or updates the initial bracket
+// Function to create the next round
+const createNextRound = (bracket, currentRoundNumber) => {
+    const currentRound = bracket.rounds.find(round => round.roundNumber === currentRoundNumber);
+    const nextRoundNumber = currentRoundNumber + 1;
+    const nextRoundMatchups = [];
+
+    for (let i = 0; i < currentRound.matchups.length; i += 2) {
+        const newMatchup = {
+            matchId: generateMatchId(nextRoundNumber, nextRoundMatchups.length + 1),
+            team1: currentRound.matchups[i].winner,
+            team2: currentRound.matchups[i + 1] ? currentRound.matchups[i + 1].winner : null,
+            winner: null
+        };
+        nextRoundMatchups.push(newMatchup);
+    }
+
+    bracket.rounds.push({
+        roundNumber: nextRoundNumber,
+        matchups: nextRoundMatchups
+    });
+
+    return nextRoundNumber;
+};
+
+// Function to update winner and potentially create next round
+const updateWinnerAndCreateNextRound = async (bracket, roundNumber, matchId, winnerName) => {
+    const currentRound = bracket.rounds.find(round => round.roundNumber === roundNumber);
+    const match = currentRound.matchups.find(m => m.matchId === matchId);
+    
+    if (!match) {
+        throw new Error('Match not found');
+    }
+
+    match.winner = winnerName;
+
+    if (isRoundComplete(currentRound)) {
+        if (currentRound.matchups.length > 1) {
+            createNextRound(bracket, roundNumber);
+        }
+    }
+
+    await bracket.save();
+};
+
+// Admin initializes the bracket with round 1 matchups
 router.post('/initialize', authMiddleware, async (req, res) => {
     try {
-        // Check if user is admin
         if (req.user.role !== 'admin') {
             return res.status(403).json({ msg: 'Only admins can initialize brackets' });
         }
 
-        const { matchups } = req.body; // matchups is an array of arrays with team names
+        const { matchups } = req.body;
 
-        // Generate custom bracket ID based on the number of existing brackets
-        const bracketCount = await Bracket.countDocuments();
-        const bracketId = generateBracketId(bracketCount + 1); // "B001", "B002", etc.
-
-        // Create matchups for this bracket
-        const newMatchups = matchups.map((matchup, index) => ({
-            matchId: generateMatchId(bracketId, index + 1), // Unique match ID
-            team1: matchup[0],
-            team2: matchup[1] || null, // team2 can be null if only one team is provided
-            winner: null
-        }));
-
-        // Create the initial bracket
         const newBracket = new Bracket({
-            bracketId,
-            round: 1,
-            matchups: newMatchups
+            bracketId: 'B' + Date.now(), // Generate a unique bracket ID
+            rounds: [
+                {
+                    roundNumber: 1,
+                    matchups: matchups.map((matchup, index) => ({
+                        matchId: generateMatchId(1, index + 1),
+                        team1: matchup[0],
+                        team2: matchup[1],
+                        winner: null
+                    }))
+                }
+            ]
         });
 
         await newBracket.save();
@@ -51,86 +90,36 @@ router.post('/initialize', authMiddleware, async (req, res) => {
     }
 });
 
-// Admin updates the winner and creates/updates the next bracket if needed
+// Admin updates the winner and potentially creates the next round
 router.post('/update', authMiddleware, async (req, res) => {
     try {
-        // Check if user is admin
         if (req.user.role !== 'admin') {
             return res.status(403).json({ msg: 'Only admins can update brackets' });
         }
 
-        const { bracketId, matchId, winnerName } = req.body;
+        const { bracketId, roundNumber, matchId, winnerName } = req.body;
 
-        // Find the current bracket using the custom bracketId
         const bracket = await Bracket.findOne({ bracketId });
         if (!bracket) {
             return res.status(404).json({ msg: 'Bracket not found' });
         }
 
-        // Find the match by its custom matchId
-        const match = bracket.matchups.find(m => m.matchId === matchId);
-        if (!match) {
-            return res.status(404).json({ msg: 'Match not found' });
+        await updateWinnerAndCreateNextRound(bracket, roundNumber, matchId, winnerName);
+
+        res.json({ msg: 'Match winner updated and next round created if necessary.', bracket });
+    } catch (err) {
+        res.status(500).json({ msg: 'Server error', error: err.message });
+    }
+});
+
+// Get the current state of a bracket
+router.get('/:bracketId', async (req, res) => {
+    try {
+        const bracket = await Bracket.findOne({ bracketId: req.params.bracketId });
+        if (!bracket) {
+            return res.status(404).json({ msg: 'Bracket not found' });
         }
-
-        // Update the winner for the current match
-        match.winner = winnerName;
-        await bracket.save();
-
-        // Now we need to move the winner into the next round
-        const nextRound = bracket.round + 1;
-
-        // Check how many winners exist in this bracket
-        const currentWinners = bracket.matchups.filter(m => m.winner).map(m => m.winner);
-
-        // Only create the next bracket when there are enough winners to make matchups (pairs of winners)
-        if (currentWinners.length % 2 === 0 && currentWinners.length > 0) {
-            // First check if there's an existing next bracket for the next round
-            let nextBracket = await Bracket.findOne({ round: nextRound });
-
-            if (!nextBracket) {
-                // If no bracket exists for the next round, create a new one for the first matchup
-                const bracketCount = await Bracket.countDocuments();
-                const newBracketId = generateBracketId(bracketCount + 1); // Generate the new bracket ID
-
-                nextBracket = new Bracket({
-                    bracketId: newBracketId,
-                    round: nextRound,
-                    matchups: []
-                });
-            }
-
-            // Collect winners of matches from current bracket in pairs
-            const winnerPairs = [];
-            for (let i = 0; i < currentWinners.length; i += 2) {
-                winnerPairs.push([currentWinners[i], currentWinners[i + 1]]);
-            }
-
-            // Now fill the next bracket's matchups with pairs of winners
-            winnerPairs.forEach((pair, index) => {
-                const [team1, team2] = pair;
-
-                const matchCount = nextBracket.matchups.length + 1;
-                const newMatchId = generateMatchId(nextBracket.bracketId, matchCount); // Generate new match ID
-
-                nextBracket.matchups.push({
-                    matchId: newMatchId,
-                    team1,
-                    team2: team2 || null, // Handle odd number of teams
-                    winner: null
-                });
-            });
-
-            // Save the updated next bracket
-            await nextBracket.save();
-
-            res.json({
-                msg: 'Match winner updated and added to the next round.',
-                nextBracket
-            });
-        } else {
-            res.json({ msg: 'Match winner updated. Waiting for more winners to progress to the next round.' });
-        }
+        res.json(bracket);
     } catch (err) {
         res.status(500).json({ msg: 'Server error', error: err.message });
     }
