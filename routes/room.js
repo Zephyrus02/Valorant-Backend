@@ -1,5 +1,7 @@
 const express = require("express");
 const Room = require("../models/Room");
+const User = require("../models/User");
+const Team = require("../models/Team");
 const authMiddleware = require("../middleware/authMiddleware");
 
 const router = express.Router();
@@ -11,7 +13,7 @@ const generateRoomCode = () =>
 // Admin creates a new room
 router.post("/create", authMiddleware, async (req, res) => {
 	try {
-		// Check if user is admin
+		// Check if user is admin or moderator
 		if (req.user.role !== "admin" && req.user.role !== "moderator") {
 			return res.status(403).json({ msg: "Only admins can create rooms" });
 		}
@@ -62,7 +64,7 @@ router.post("/join", authMiddleware, async (req, res) => {
 			room.gameStarted = true;
 			await room.save();
 			return res.json({
-				msg: "Game started. Both participants have joined.",
+				msg: "Map selection started. Both participants have joined.",
 				room,
 			});
 		}
@@ -77,7 +79,7 @@ router.post("/join", authMiddleware, async (req, res) => {
 });
 
 // Participants select titles in turn
-router.post("/select", authMiddleware, async (req, res) => {
+router.post("/mapban", authMiddleware, async (req, res) => {
 	const { roomCode, title } = req.body;
 
 	try {
@@ -89,7 +91,7 @@ router.post("/select", authMiddleware, async (req, res) => {
 
 		// Ensure the game has started
 		if (!room.gameStarted) {
-			return res.status(400).json({ msg: "Game has not started yet" });
+			return res.status(400).json({ msg: "Map selection has not started yet" });
 		}
 
 		// Ensure it's the user's turn
@@ -108,7 +110,7 @@ router.post("/select", authMiddleware, async (req, res) => {
 		room.titles.splice(titleIndex, 1);
 
 		// Switch the turn
-		room.currentTurn = (room.currentTurn + 1) % 2; // Toggle between 0 and 1 for 2 participants
+		room.currentTurn = (room.currentTurn + 1) % 2; // Toggle between 0 and 1 for participants
 
 		// If only one title remains, end the game
 		if (room.titles.length === 1) {
@@ -117,7 +119,7 @@ router.post("/select", authMiddleware, async (req, res) => {
 			await room.save();
 
 			return res.json({
-				msg: `Game over. The remaining title is: ${remainingTitle}`,
+				msg: `Selected map is: ${remainingTitle}`,
 				room,
 			});
 		}
@@ -133,8 +135,8 @@ router.post("/select", authMiddleware, async (req, res) => {
 });
 
 // Player 2 selects attacker or defender
-router.post("/choice", authMiddleware, async (req, res) => {
-	const { roomCode, choice } = req.body; // choice can be 'attacker' or 'defender'
+router.post("/side-select", authMiddleware, async (req, res) => {
+	const { roomCode, choice } = req.body;
 
 	try {
 		const room = await Room.findOne({ roomCode });
@@ -158,10 +160,10 @@ router.post("/choice", authMiddleware, async (req, res) => {
 		}
 
 		// Validate choice
-		if (!["attacker", "defender"].includes(choice)) {
+		if (!["attacking", "defending"].includes(choice)) {
 			return res
 				.status(400)
-				.json({ msg: "Choice must be attacker or defender." });
+				.json({ msg: "Choice must be attacking or defending." });
 		}
 
 		// Save Player 2's choice
@@ -169,6 +171,44 @@ router.post("/choice", authMiddleware, async (req, res) => {
 		await room.save();
 
 		res.json({ msg: `Player 2 has chosen: ${choice}`, room });
+	} catch (err) {
+		res.status(500).json({ msg: "Server error", error: err.message });
+	}
+});
+
+// Update the winner (Admin/Moderator only)
+router.post("/set-winner", authMiddleware, async (req, res) => {
+	const { roomCode, winnerUsername } = req.body;
+
+	try {
+		// Check if user is admin or moderator
+		if (req.user.role !== "admin" && req.user.role !== "moderator") {
+			return res.status(403).json({ msg: "Only admins can update the winner" });
+		}
+
+		// Find the room by code
+		const room = await Room.findOne({ roomCode });
+		if (!room) {
+			return res.status(404).json({ msg: "Room not found" });
+		}
+
+		// Find the user by their username
+		const winnerUser = await User.findOne({ username: winnerUsername });
+		if (!winnerUser) {
+			return res.status(404).json({ msg: "User not found" });
+		}
+
+		// Find the team of the user (assuming they are part of a team)
+		const winnerTeam = await Team.findOne({ createdBy: winnerUser._id });
+		if (!winnerTeam) {
+			return res.status(404).json({ msg: "Team not found for this user" });
+		}
+
+		// Update the room's winner with the team's ID
+		room.winner = winnerTeam._id;
+		await room.save();
+
+		res.json({ msg: `Winner updated successfully`, room });
 	} catch (err) {
 		res.status(500).json({ msg: "Server error", error: err.message });
 	}
