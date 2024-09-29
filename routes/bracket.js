@@ -66,8 +66,8 @@ const updateWinnerAndCreateNextRound = async (bracket, roundNumber, matchId, win
 // Admin initializes the bracket with round 1 matchups
 router.post('/initialize', authMiddleware, async (req, res) => {
     try {
-        if (req.user.role !== 'admin') {
-            return res.status(403).json({ msg: 'Only admins can initialize brackets' });
+        if (req.user.role !== 'moderator') {
+            return res.status(403).json({ msg: 'Only moderators can initialize brackets' });
         }
 
         const { matchups } = req.body;
@@ -100,8 +100,8 @@ router.post('/initialize', authMiddleware, async (req, res) => {
 // Admin updates the winner and potentially creates the next round
 router.post('/update', authMiddleware, async (req, res) => {
     try {
-        if (req.user.role !== 'admin') {
-            return res.status(403).json({ msg: 'Only admins can update brackets' });
+        if (req.user.role !== 'moderator') {
+            return res.status(403).json({ msg: 'Only moderators can update brackets' });
         }
 
         const { bracketId, roundNumber, matchId, winnerName } = req.body;
