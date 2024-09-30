@@ -1,4 +1,4 @@
-const mongoose = require('mongoose');
+const mongoose = require("mongoose");
 
 const RoomSchema = new mongoose.Schema({
     roomCode: {
@@ -8,12 +8,12 @@ const RoomSchema = new mongoose.Schema({
         length: 6
     },
     admin: {
-        type: mongoose.Schema.Types.ObjectId,
+        type: String,
         ref: 'User',
         required: true
     },
     participants: [{
-        type: mongoose.Schema.Types.ObjectId,
+        type: String,
         ref: 'User'
     }],
     titles: {
@@ -30,13 +30,21 @@ const RoomSchema = new mongoose.Schema({
     },
     T2Choice: {
         type: String,
-        enum: ['attacker', 'defender'], // Choice can be either 'attacker' or 'defender'
+        enum: ['attacking', 'defending'],
         default: null
     },
     winner: {
-        type: mongoose.Schema.Types.ObjectId, // To reference the winning team
+        type: String,
         ref: 'Team',
         default: null
+    },
+    bracketId: {
+        type: String,  // Reference to the bracket ID
+        required: true
+    },
+    matchId: {
+        type: String,  // Reference to the matchup ID in the bracket
+        required: true
     }
 });
 

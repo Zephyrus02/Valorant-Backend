@@ -2,6 +2,7 @@ const express = require("express");
 const Room = require("../models/Room");
 const User = require("../models/User");
 const Team = require("../models/Team");
+const Bracket = require("../models/Bracket");
 const authMiddleware = require("../middleware/authMiddleware");
 
 const router = express.Router();
@@ -12,70 +13,94 @@ const generateRoomCode = () =>
 
 // Admin creates a new room
 router.post("/create", authMiddleware, async (req, res) => {
-	try {
-		// Check if user is admin or moderator
-		if (req.user.role !== "admin" && req.user.role !== "moderator") {
-			return res.status(403).json({ msg: "Only admins can create rooms" });
-		}
+    try {
+        const { bracketId, matchId } = req.body;
 
-		// Generate a 6-digit room code
-		const roomCode = generateRoomCode();
+        // Check if user is admin
+        if (req.user.role !== "admin" && req.user.role !== "moderator") {
+            return res.status(403).json({ msg: "Only admins or moderators can create rooms" });
+        }
 
-		// Create a new room
-		const newRoom = new Room({
-			roomCode: roomCode,
-			admin: req.user.userId,
-		});
+        // Verify that the provided match exists in the bracket
+        const bracket = await Bracket.findOne({ bracketId });
+        if (!bracket) {
+            return res.status(404).json({ msg: "Bracket not found" });
+        }
 
-		await newRoom.save();
-		res.status(201).json({ roomCode });
-	} catch (err) {
-		res.status(500).json({ msg: "Server error", error: err.message });
-	}
+        const roundContainingMatch = bracket.rounds.find(round =>
+            round.matchups.some(match => match.matchId === matchId)
+        );
+        if (!roundContainingMatch) {
+            return res.status(404).json({ msg: "Match not found in the bracket" });
+        }
+
+        // Fetch admin's username instead of using ObjectId
+        const adminUser = await User.findById(req.user.userId);
+        if (!adminUser) {
+            return res.status(404).json({ msg: "Admin user not found" });
+        }
+
+        // Generate a 6-digit room code
+        const roomCode = generateRoomCode();
+
+        // Create a new room associated with the bracket and matchup, and store the admin username
+        const newRoom = new Room({
+            roomCode: roomCode,
+            admin: adminUser.username, // Store the admin's username
+            bracketId: bracketId,
+            matchId: matchId,
+        });
+
+        await newRoom.save();
+        res.status(201).json({ roomCode });
+    } catch (err) {
+        res.status(500).json({ msg: "Server error", error: err.message });
+    }
 });
 
 // Participants join a room
 router.post("/join", authMiddleware, async (req, res) => {
-	const { roomCode } = req.body;
+    const { roomCode } = req.body;
 
-	try {
-		// Find the room by code
-		const room = await Room.findOne({ roomCode });
-		if (!room) {
-			return res.status(404).json({ msg: "Room not found" });
-		}
+    try {
+        // Find the room by room code
+        const room = await Room.findOne({ roomCode });
+        if (!room) {
+            return res.status(404).json({ msg: "Room not found" });
+        }
 
-		// Check if the room is already full (2 participants)
-		if (room.participants.length >= 2) {
-			return res.status(400).json({ msg: "Room is full" });
-		}
+        // Check if the room is already full (2 participants)
+        if (room.participants.length >= 2) {
+            return res.status(400).json({ msg: "Room is full" });
+        }
 
-		// Check if the user is already in the room
-		if (room.participants.includes(req.user.userId)) {
-			return res.status(400).json({ msg: "You are already in this room" });
-		}
+        // Check if the user is already in the room
+        const currentUser = await User.findById(req.user.userId).populate('team');
+        if (!currentUser.team || room.participants.includes(currentUser.team.teamName)) {
+            return res.status(400).json({ msg: "You are already in this room or you have no team" });
+        }
 
-		// Add user to the room
-		room.participants.push(req.user.userId);
-		await room.save();
+        // Add the user's team name to the room
+        room.participants.push(currentUser.team.teamName);
+        await room.save();
 
-		// Check if exactly 2 participants have joined, if so, start the game automatically
-		if (room.participants.length === 2) {
-			room.gameStarted = true;
-			await room.save();
-			return res.json({
-				msg: "Map selection started. Both participants have joined.",
-				room,
-			});
-		}
+        // Check if exactly 2 participants have joined, if so, start the game automatically
+        if (room.participants.length === 2) {
+            room.gameStarted = true;
+            await room.save();
+            return res.json({
+                msg: "Map selection started. Both participants have joined.",
+                room,
+            });
+        }
 
-		res.json({
-			msg: "Successfully joined the room. Waiting for another participant.",
-			room,
-		});
-	} catch (err) {
-		res.status(500).json({ msg: "Server error", error: err.message });
-	}
+        res.json({
+            msg: "Successfully joined the room. Waiting for another participant.",
+            room,
+        });
+    } catch (err) {
+        res.status(500).json({ msg: "Server error", error: err.message });
+    }
 });
 
 // Participants select titles in turn
@@ -178,40 +203,67 @@ router.post("/side-select", authMiddleware, async (req, res) => {
 
 // Update the winner (Admin/Moderator only)
 router.post("/set-winner", authMiddleware, async (req, res) => {
-	const { roomCode, winnerUsername } = req.body;
+    try {
+        const { roomCode, winnerUsername } = req.body;
 
-	try {
-		// Check if user is admin or moderator
-		if (req.user.role !== "admin" && req.user.role !== "moderator") {
-			return res.status(403).json({ msg: "Only admins can update the winner" });
-		}
+        // Find the room by its code
+        const room = await Room.findOne({ roomCode });
+        if (!room) {
+            return res.status(404).json({ msg: "Room not found" });
+        }
 
-		// Find the room by code
-		const room = await Room.findOne({ roomCode });
-		if (!room) {
-			return res.status(404).json({ msg: "Room not found" });
-		}
+        // Check if the user is admin or moderator
+        if (req.user.role !== "admin" && req.user.role !== "moderator") {
+            return res.status(403).json({ msg: "Only admins or moderators can update the winner" });
+        }
 
-		// Find the user by their username
-		const winnerUser = await User.findOne({ username: winnerUsername });
-		if (!winnerUser) {
-			return res.status(404).json({ msg: "User not found" });
-		}
+        // Fetch the user who won based on the winner's username
+        const winnerUser = await User.findOne({ username: winnerUsername });
+        if (!winnerUser) {
+            return res.status(404).json({ msg: "Winner user not found" });
+        }
 
-		// Find the team of the user (assuming they are part of a team)
-		const winnerTeam = await Team.findOne({ createdBy: winnerUser._id });
-		if (!winnerTeam) {
-			return res.status(404).json({ msg: "Team not found for this user" });
-		}
+        // Fetch the team associated with the winner user
+        const winnerTeam = await Team.findById(winnerUser.team);
+        if (!winnerTeam) {
+            return res.status(404).json({ msg: "Winner's team not found" });
+        }
 
-		// Update the room's winner with the team's ID
-		room.winner = winnerTeam._id;
-		await room.save();
+        // Update the winner in the room with the team's name
+        room.winner = winnerTeam.teamName;
+        await room.save();
 
-		res.json({ msg: `Winner updated successfully`, room });
-	} catch (err) {
-		res.status(500).json({ msg: "Server error", error: err.message });
-	}
+        // Find the bracket and match to update the winner
+        const bracket = await Bracket.findOne({ bracketId: room.bracketId });
+        if (!bracket) {
+            return res.status(404).json({ msg: "Bracket not found" });
+        }
+
+        // Find the match in the bracket by the match ID
+        const currentRound = bracket.rounds.find(round => 
+            round.matchups.some(match => match.matchId === room.matchId)
+        );
+        if (!currentRound) {
+            return res.status(404).json({ msg: "Match not found in bracket" });
+        }
+
+        const match = currentRound.matchups.find(m => m.matchId === room.matchId);
+        if (!match) {
+            return res.status(404).json({ msg: "Match not found" });
+        }
+
+        // Update the winner of the match in the bracket with the team's name
+        match.winner = winnerTeam.teamName;
+        await bracket.save();
+
+        res.json({ 
+            msg: "Room winner and bracket updated successfully", 
+            room, 
+            bracket 
+        });
+    } catch (err) {
+        res.status(500).json({ msg: "Server error", error: err.message });
+    }
 });
 
 module.exports = router;
